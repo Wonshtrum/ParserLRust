@@ -23,12 +23,17 @@ struct Lexeme {
 	id: usize,
 	terminal: bool
 }
+#[allow(dead_code)]
+const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
+#[allow(dead_code)]
+const EOF: Lexeme = Lexeme {id: 2, terminal: true};
 
 
 struct ParserContext {
-	rule_id: usize,
 	lexeme_id: usize,
-	lexeme_names: Vec<String>
+	lexeme_names: Vec<String>,
+	rule_id: usize,
+	rules: Vec<Rule>
 }
 
 
@@ -87,12 +92,24 @@ impl Position<'_> {
 		}
 		format!("{}. {} -> {} , {}", self.rule.id, self.rule.product.fmt(ctx), tokens_repr, self.lookahead.fmt(ctx))
 	}
+
+	fn at(&self, add: usize) -> Option<Lexeme> {
+		let position = self.position+add;
+		if position >= self.rule.tokens.len() {
+			None
+		} else {
+			Some(self.rule.tokens[position])
+		}
+	}
 }
 
 
 impl ParserContext {
 	fn new() -> ParserContext {
-		ParserContext {rule_id: 0, lexeme_id: 0, lexeme_names: Vec::new()}
+		let mut ctx = ParserContext {rule_id: 0, lexeme_id: 0, lexeme_names: Vec::new(), rules: Vec::new()};
+		ctx.nterm("S'");
+		ctx.term("$");
+		ctx
 	}
 	fn term(&mut self, name: &str) -> Lexeme {
 		self.lexeme_id += 1;
@@ -104,9 +121,10 @@ impl ParserContext {
 		self.lexeme_names.push(String::from(name));
 		Lexeme {id: self.lexeme_id, terminal: false}
 	}
-	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>) -> Rule {
+	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>) {
 		self.rule_id += 1;
-		Rule {id: self.rule_id, product: product, tokens: tokens}
+		let rule = Rule {id: self.rule_id, product: product, tokens: tokens};
+		self.rules.push(rule);
 	}
 }
 
@@ -163,25 +181,22 @@ fn gen_first(rules: &Vec<Rule>, ctx: &ParserContext) {
 #[allow(non_snake_case)]
 fn main() {
 	let mut ctx = ParserContext::new();
-	let ACCEPT = ctx.nterm("S'");
 	let S = ctx.nterm("S");
 	let X = ctx.nterm("X");
 	let a = ctx.term("a");
 	let b = ctx.term("b");
 
-	let rules = vec![
-		ctx.rule(ACCEPT, vec![S]),
-		ctx.rule(S, vec![X, X]),
-		ctx.rule(X, vec![a, X]),
-		ctx.rule(X, vec![b])
-	];
+	ctx.rule(ACCEPT, vec![S]);
+	ctx.rule(S, vec![X, X]);
+	ctx.rule(X, vec![a, X]);
+	ctx.rule(X, vec![b]);
 
-	let r = &rules[1];
+	let r = &ctx.rules[1];
 	println!("{}", r.fmt(&ctx));
 	println!("{}", r.start(a).fmt(&ctx));
 	let mut p = r.start(b);
 	p.position = 1;
 	println!("{}", p.fmt(&ctx));
 
-	gen_first(&rules, &ctx);
+	gen_first(&ctx.rules, &ctx);
 }
