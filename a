@@ -1,0 +1,52 @@
+error[E0308]: mismatched types
+   --> main.rs:118:25
+    |
+118 |         if first.contains_key(rule.product) {
+    |                               ^^^^^^^^^^^^
+    |                               |
+    |                               expected reference, found struct `Lexeme`
+    |                               help: consider borrowing here: `&rule.product`
+    |
+    = note: expected reference `&_`
+                  found struct `Lexeme`
+
+error[E0308]: mismatched types
+   --> main.rs:119:14
+    |
+119 |             first.get(rule.product).insert(rule.tokens[0]);
+    |                       ^^^^^^^^^^^^
+    |                       |
+    |                       expected reference, found struct `Lexeme`
+    |                       help: consider borrowing here: `&rule.product`
+    |
+    = note: expected reference `&_`
+                  found struct `Lexeme`
+
+error[E0308]: mismatched types
+   --> main.rs:119:35
+    |
+119 |             first.get(rule.product).insert(rule.tokens[0]);
+    |                                            ^^^^^^^^^^^^^^
+    |                                            |
+    |                                            expected reference, found struct `Lexeme`
+    |                                            help: consider borrowing here: `&rule.tokens[0]`
+    |
+    = note: expected reference `&_`
+                  found struct `Lexeme`
+
+error[E0599]: no method named `fmt` found for struct `HashSet` in the current scope
+   --> main.rs:125:36
+    |
+125 |         println!("{}: {}", k.fmt(ctx), v.fmt(ctx))
+    |                                          ^^^ method not found in `HashSet<Lexeme>`
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: the following trait is implemented but not in scope; perhaps add a `use` for it:
+    |
+1   | use std::fmt::Debug;
+    |
+
+error: aborting due to 4 previous errors
+
+Some errors have detailed explanations: E0308, E0599.
+For more information about an error, try `rustc --explain E0308`.
