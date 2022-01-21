@@ -23,19 +23,13 @@ struct Lexeme {
 	id: usize,
 	terminal: bool
 }
-type LexSet = HashSet<Lexeme>;
-type First = HashMap<Lexeme, LexSet>;
-#[allow(dead_code)]
-const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
-#[allow(dead_code)]
-const EOF: Lexeme = Lexeme {id: 2, terminal: true};
 
 
 struct ParserContext {
 	lexeme_id: usize,
 	lexeme_names: Vec<String>,
 	rule_id: usize,
-	rules: Vec<Rule>
+	rules: Rules
 }
 
 
@@ -46,12 +40,41 @@ struct Rule {
 }
 
 
-#[derive(Copy, Clone)]
 struct Position<'a> {
 	rule: &'a Rule,
 	lookahead: Lexeme,
 	position: usize
 }
+
+
+#[derive(Copy, Clone)]
+enum ActionType {
+	Shift,
+	Reduce
+}
+
+
+enum Action<'a> {
+	Shift(Position<'a>),
+	Reduce(usize)
+}
+
+
+#[derive(Copy, Clone)]
+struct Node {
+	action: ActionType,
+	value: usize
+}
+
+
+type LexSet = HashSet<Lexeme>;
+type First = HashMap<Lexeme, LexSet>;
+type State<'a> = HashSet<Position<'a>>;
+type Rules = Vec<Rule>;
+
+
+const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
+const EOF: Lexeme = Lexeme {id: 2, terminal: true};
 
 
 impl Lexeme {
@@ -128,6 +151,15 @@ impl Position<'_> {
 		result
 	}
 }
+fn next_action<'a>(entry: &Position, ctx: &'a ParserContext) -> (Lexeme, Action<'a>) {
+	if let Some(at) = entry.at(0) {
+		(at, Action::Shift(Position {rule: &ctx.rules[entry.rule.id-1], lookahead: entry.lookahead, position: entry.position+1}))
+	} else {
+		(entry.lookahead, Action::Reduce(entry.rule.id))
+	}
+}
+
+
 impl Hash for Position<'_> {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.rule.id.hash(state);
@@ -199,7 +231,7 @@ fn fmt_state(state: &State, ctx: &ParserContext) -> String {
 }
 
 
-fn gen_first(rules: &Vec<Rule>, ctx: &ParserContext) -> First {
+fn gen_first(rules: &Rules, ctx: &ParserContext) -> First {
 	let mut first: First = HashMap::new();
 	for rule in rules {
 		//println!("{} -> {}", rule.product.fmt(ctx), rule.tokens[0].fmt(ctx));
@@ -237,23 +269,82 @@ fn gen_first(rules: &Vec<Rule>, ctx: &ParserContext) -> First {
 }
 
 
-type State<'a> = HashSet<Position<'a>>;
 fn expand_state<'a>(state:State<'a>, ctx: &'a ParserContext, first: &First) -> State<'a> {
 	let mut waiting = state;
 	let mut new_state: State = HashSet::new();
 	while !waiting.is_empty() {
 		let mut new_waiting: State = HashSet::new();
-		for entry in &waiting {
-			if !new_state.contains(entry) {
-				new_state.insert(*entry);
+		for entry in waiting {
+			if !new_state.contains(&entry) {
 				for sub_entry in entry.expand(ctx, &first) {
 					new_waiting.insert(sub_entry);
 				}
+				new_state.insert(entry);
 			}
 		}
 		waiting = new_waiting;
 	}
 	new_state
+}
+
+
+fn build_automaton(ctx: &ParserContext, first: &First) {
+	let mut states: HashMap<usize, State> = HashMap::new();
+	let mut graph: HashMap<(usize, Lexeme), Node> = HashMap::new();
+	let mut next_state_id = 1;
+	let mut waiting = vec![(0, HashSet::from([ctx.rules[0].start(EOF)]))];
+	while !waiting.is_empty() {
+		let mut new_waiting = Vec::new();
+		for (state_id, state) in waiting {
+			let state = expand_state(state, ctx, first);
+			states.insert(state_id, state);
+			let state = states.get(&state_id).unwrap();
+			/*let mut merge = false;
+			if merge {
+				continue;
+			}*/
+			let mut shift: HashMap<Lexeme, State> = HashMap::new();
+			let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
+			for entry in state {
+				match next_action(&entry, ctx) {
+					(token, Action::Shift(new_entry)) => {
+						if reduce.contains_key(&token) {
+							panic!("Shift/Reduce conflict");
+						}
+						if let Some(set) = shift.get_mut(&token) {
+							set.insert(new_entry);
+						} else {
+							shift.insert(token, HashSet::from([new_entry]));
+						}
+					}
+					(token, Action::Reduce(rule_id)) => {
+						if reduce.contains_key(&token) {
+							panic!("Reduce/Reduce conflict");
+						}
+						if shift.contains_key(&token) {
+							panic!("Shift/Reduce conflict");
+						}
+						reduce.insert(token, rule_id);
+					}
+				}
+			}
+			for (k, v) in shift {
+				new_waiting.push((next_state_id, v));
+				graph.insert((state_id, k), Node {action: ActionType::Shift, value: next_state_id});
+				next_state_id += 1;
+			}
+			for (k, v) in reduce {
+				graph.insert((state_id, k), Node {action: ActionType::Reduce, value: v});
+			}
+		}
+		waiting = new_waiting;
+		if states.len()>1 {
+			break;
+		}
+	}
+	for (state_id, state) in states {
+		println!("State {}:\n{}", state_id, fmt_state(&state, ctx));
+	}
 }
 
 
@@ -282,4 +373,6 @@ fn main() {
 	println!("{}", fmt_state(&state, &ctx));
 	state = expand_state(state, &ctx, &first);
 	println!("{}", fmt_state(&state, &ctx));
+
+	build_automaton(&ctx, &first);
 }
