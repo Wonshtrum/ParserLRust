@@ -8,6 +8,7 @@ enum Color {
 	Red = 9,
 	Green = 10,
 	Yellow = 11,
+	White = 15,
 	Blue = 21,
 }
 
@@ -47,6 +48,7 @@ struct Position<'a> {
 }
 
 
+#[derive(PartialEq)]
 #[derive(Copy, Clone)]
 enum ActionType {
 	Shift,
@@ -180,8 +182,8 @@ impl Eq for Position<'_> {}
 impl ParserContext {
 	fn new() -> ParserContext {
 		let mut ctx = ParserContext {rule_id: 0, lexeme_id: 0, lexeme_names: Vec::new(), rules: Vec::new()};
-		ctx.nterm("S'");
-		ctx.term("$");
+		ctx.nterm(&colored("S'", Color::Blue, true));
+		ctx.term(&colored("$", Color::Blue, true));
 		ctx
 	}
 	fn term(&mut self, name: &str) -> Lexeme {
@@ -288,7 +290,7 @@ fn expand_state<'a>(state:State<'a>, ctx: &'a ParserContext, first: &First) -> S
 }
 
 
-fn build_automaton(ctx: &ParserContext, first: &First) {
+fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap<(usize, Lexeme), Node>, HashMap<usize, State<'a>>) {
 	let mut states: HashMap<usize, State> = HashMap::new();
 	let mut graph: HashMap<(usize, Lexeme), Node> = HashMap::new();
 	let mut next_state_id = 1;
@@ -297,12 +299,24 @@ fn build_automaton(ctx: &ParserContext, first: &First) {
 		let mut new_waiting = Vec::new();
 		for (state_id, state) in waiting {
 			let state = expand_state(state, ctx, first);
+			let mut merge = Vec::new();
+			for (other_id, other) in &states {
+				if other == &state {
+					for (k, v) in &graph {
+						if v.action == ActionType::Shift && v.value == state_id {
+							merge.push((*k, *other_id));
+						}
+					}
+				}
+			}
+			if !merge.is_empty() {
+				for (k, v) in merge {
+					graph.insert(k, Node {action: ActionType::Shift, value: v});
+				}
+				continue;
+			}
 			states.insert(state_id, state);
 			let state = states.get(&state_id).unwrap();
-			/*let mut merge = false;
-			if merge {
-				continue;
-			}*/
 			let mut shift: HashMap<Lexeme, State> = HashMap::new();
 			let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
 			for entry in state {
@@ -338,13 +352,8 @@ fn build_automaton(ctx: &ParserContext, first: &First) {
 			}
 		}
 		waiting = new_waiting;
-		if states.len()>1 {
-			break;
-		}
 	}
-	for (state_id, state) in states {
-		println!("State {}:\n{}", state_id, fmt_state(&state, ctx));
-	}
+	(graph, states)
 }
 
 
@@ -369,10 +378,18 @@ fn main() {
 	println!("{}", p.fmt(&ctx));
 
 	let first = gen_first(&ctx.rules, &ctx);
-	let mut state = HashSet::from([ctx.rules[0].start(EOF)]);
-	println!("{}", fmt_state(&state, &ctx));
-	state = expand_state(state, &ctx, &first);
-	println!("{}", fmt_state(&state, &ctx));
 
-	build_automaton(&ctx, &first);
+	let (graph, states) = build_automaton(&ctx, &first);
+	for (state_id, state) in &states {
+		println!("State {}:\n{}", state_id, fmt_state(&state, &ctx));
+	}
+	for ((state_id, token), node) in graph {
+		println!("({}, {}) -> {}",
+			state_id,
+			token.fmt(&ctx),
+			match node.action {
+				ActionType::Shift => colored(&format!("S{}", node.value), Color::White, false),
+				ActionType::Reduce => colored(&format!("R{}", node.value), Color::Yellow, true)
+			});
+	}
 }
