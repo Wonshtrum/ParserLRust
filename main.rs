@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::iter::FromIterator;
 
 
 #[allow(dead_code)]
@@ -72,7 +73,10 @@ struct Node {
 type LexSet = HashSet<Lexeme>;
 type First = HashMap<Lexeme, LexSet>;
 type State<'a> = HashSet<Position<'a>>;
+type States<'a> = HashMap<usize, State<'a>>;
 type Rules = Vec<Rule>;
+type Graph = HashMap<(usize, Lexeme), Node>;
+type Token = Lexeme;
 
 
 const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
@@ -232,6 +236,12 @@ fn fmt_state(state: &State, ctx: &ParserContext) -> String {
 	result
 }
 
+fn fmt_node(node: &Node) -> String {
+	match node.action {
+		ActionType::Shift => colored(&format!("S{}", node.value), Color::White, false),
+		ActionType::Reduce => colored(&format!("R{}", node.value), Color::Yellow, true)
+	}
+}
 
 fn gen_first(rules: &Rules, ctx: &ParserContext) -> First {
 	let mut first: First = HashMap::new();
@@ -291,8 +301,8 @@ fn expand_state<'a>(state:State<'a>, ctx: &'a ParserContext, first: &First) -> S
 
 
 fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap<(usize, Lexeme), Node>, HashMap<usize, State<'a>>) {
-	let mut states: HashMap<usize, State> = HashMap::new();
-	let mut graph: HashMap<(usize, Lexeme), Node> = HashMap::new();
+	let mut states: States = HashMap::new();
+	let mut graph: Graph = HashMap::new();
 	let mut next_state_id = 1;
 	let mut waiting = vec![(0, HashSet::from([ctx.rules[0].start(EOF)]))];
 	while !waiting.is_empty() {
@@ -357,6 +367,41 @@ fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap
 }
 
 
+fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool {
+	stream.push_back(EOF);
+	let mut state_stack = vec![0];
+	let mut build_stack: Vec<Token> = Vec::new();
+	while !stream.is_empty() {
+		let state = state_stack[state_stack.len()-1];
+		let token = *stream.front().unwrap();
+		let key = (state, token);
+		if let Some(node) = graph.get(&key) {
+			println!("({}, {}) : {}", state, token.fmt(ctx), fmt_node(node));
+			match node.action {
+				ActionType::Reduce => {
+					let reduction = &ctx.rules[node.value-1];
+					if reduction.product == ACCEPT {
+						println!("{}", colored("Valid input", Color::Green, true));
+						return true;
+					}
+					state_stack.truncate(state_stack.len().saturating_sub(reduction.tokens.len()));
+					stream.push_front(reduction.product);
+				}
+				ActionType::Shift => {
+					state_stack.push(node.value);
+					stream.pop_front();
+				}
+			}
+		} else {
+			let expected = graph.keys().filter(|(s, t)| s == &state && t.terminal).map(|(s, t)| *t).collect::<Vec<Lexeme>>();
+			println!("Found: {}\nExpected: {}", token.fmt(ctx), fmt_lexset(&HashSet::from_iter(expected), ctx));
+			return false;
+		}
+	}
+	unreachable!();
+}
+
+
 #[allow(non_snake_case)]
 fn main() {
 	let mut ctx = ParserContext::new();
@@ -364,6 +409,7 @@ fn main() {
 	let X = ctx.nterm("X");
 	let a = ctx.term("a");
 	let b = ctx.term("b");
+	let c = ctx.term("c");
 
 	ctx.rule(ACCEPT, vec![S]);
 	ctx.rule(S, vec![X, X]);
@@ -383,13 +429,11 @@ fn main() {
 	for (state_id, state) in &states {
 		println!("State {}:\n{}", state_id, fmt_state(&state, &ctx));
 	}
-	for ((state_id, token), node) in graph {
+	for ((state_id, token), node) in &graph {
 		println!("({}, {}) -> {}",
 			state_id,
 			token.fmt(&ctx),
-			match node.action {
-				ActionType::Shift => colored(&format!("S{}", node.value), Color::White, false),
-				ActionType::Reduce => colored(&format!("R{}", node.value), Color::Yellow, true)
-			});
+			fmt_node(node));
 	}
+	parse(graph, &ctx, VecDeque::from([a, a, b]));
 }
