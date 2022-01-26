@@ -1,0 +1,34 @@
+warning: unused variable: `build_stack`
+   --> main.rs:381:10
+    |
+381 |     let mut build_stack: Vec<Option<T>> = Vec::new();
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_build_stack`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: variable does not need to be mutable
+   --> main.rs:381:6
+    |
+381 |     let mut build_stack: Vec<Option<T>> = Vec::new();
+    |         ----^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: field is never read: `value`
+  --> main.rs:33:2
+   |
+33 |     value: Option<Box<T>>
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field is never read: `method`
+  --> main.rs:49:2
+   |
+49 |     method: ReduceMethod
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: 4 warnings emitted
+

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
+use std::any::Any;
 
 
 #[allow(dead_code)]
@@ -27,6 +28,12 @@ struct Lexeme {
 }
 
 
+struct Token {
+	kind: Lexeme,
+	value: Option<Box<dyn Any>>
+}
+
+
 struct ParserContext {
 	lexeme_id: usize,
 	lexeme_names: Vec<String>,
@@ -38,7 +45,8 @@ struct ParserContext {
 struct Rule {
 	id: usize,
 	product: Lexeme,
-	tokens: Vec<Lexeme>
+	tokens: Vec<Lexeme>,
+	method: ReduceMethod
 }
 
 
@@ -76,7 +84,8 @@ type State<'a> = HashSet<Position<'a>>;
 type States<'a> = HashMap<usize, State<'a>>;
 type Rules = Vec<Rule>;
 type Graph = HashMap<(usize, Lexeme), Node>;
-type Token = Lexeme;
+type TokenValue = Option<Box<dyn Any>>;
+type ReduceMethod = Box<dyn Fn(Vec<TokenValue>) -> TokenValue>;
 
 
 const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
@@ -200,12 +209,12 @@ impl ParserContext {
 		self.lexeme_names.push(String::from(name));
 		Lexeme {id: self.lexeme_id, terminal: false}
 	}
-	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>) {
+	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>, method: ReduceMethod) {
 		if self.rule_id == 0 {
 			assert!(product == ACCEPT, "First rule must produce ACCEPT");
 		}
 		self.rule_id += 1;
-		let rule = Rule {id: self.rule_id, product: product, tokens: tokens};
+		let rule = Rule {id: self.rule_id, product, tokens, method};
 		self.rules.push(rule);
 	}
 }
@@ -368,15 +377,15 @@ fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap
 
 
 fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool {
-	stream.push_back(EOF);
+	stream.push_back(Token {kind: EOF, value: None});
 	let mut state_stack = vec![0];
-	let mut build_stack: Vec<Token> = Vec::new();
+	//let build_stack: Vec<Option<Box<dyn Any>>> = Vec::new();
 	while !stream.is_empty() {
 		let state = state_stack[state_stack.len()-1];
-		let token = *stream.front().unwrap();
-		let key = (state, token);
+		let token = stream.front().unwrap();
+		let key = (state, token.kind);
 		if let Some(node) = graph.get(&key) {
-			println!("({}, {}) : {}", state, token.fmt(ctx), fmt_node(node));
+			println!("({}, {}) : {}", state, token.kind.fmt(ctx), fmt_node(node));
 			match node.action {
 				ActionType::Reduce => {
 					let reduction = &ctx.rules[node.value-1];
@@ -384,8 +393,9 @@ fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool
 						println!("{}", colored("Valid input", Color::Green, true));
 						return true;
 					}
+					//(reduction.method)(build_stack);
 					state_stack.truncate(state_stack.len().saturating_sub(reduction.tokens.len()));
-					stream.push_front(reduction.product);
+					stream.push_front(Token {kind:reduction.product, value: None });
 				}
 				ActionType::Shift => {
 					state_stack.push(node.value);
@@ -393,12 +403,53 @@ fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool
 				}
 			}
 		} else {
-			let expected = graph.keys().filter(|(s, t)| s == &state && t.terminal).map(|(s, t)| *t).collect::<Vec<Lexeme>>();
-			println!("Found: {}\nExpected: {}", token.fmt(ctx), fmt_lexset(&HashSet::from_iter(expected), ctx));
+			let expected = graph.keys().filter(|(s, t)| s == &state && t.terminal).map(|(_, t)| *t).collect::<Vec<Lexeme>>();
+			println!("Found: {}\nExpected: {}", token.kind.fmt(ctx), fmt_lexset(&HashSet::from_iter(expected), ctx));
 			return false;
 		}
 	}
 	unreachable!();
+}
+
+
+macro_rules! RULE {
+	($T:ident [$v:ident $i:ident] $func:block) => {
+		{
+			let boxed: TokenValue = Some(Box::from($func));
+			boxed
+		}
+	};
+	($T:ident $l:ident($n:ident : $t:ident) $($l_:ident($n_:ident : $t_:ident))* [$v:ident $i:ident] $func:block) => {
+		{
+			println!("here!!!");
+			$i += 1;
+			if let Some(pointer) = &$v[$i-1] {
+				if let Some($T::$t($n)) = pointer.downcast_ref::<$T>() {
+					RULE!($T $($l_($n_:$t_))* [$v $i] $func)
+				} else {
+					unreachable!();
+				}
+			} else {
+				unreachable!();
+			}
+		}
+	};
+	(in $ctx:ident<$T:ident> where $product:ident : $($l:ident($n:ident : $t:ident))* => $func:block) => {
+		{
+			$ctx.rule($product, vec![$($l,)*], Box::from(|v:Vec<TokenValue>| {
+				let mut i = 0;
+				RULE!($T $($l($n:$t))* [v i] $func)
+			}));
+		}
+	};
+}
+
+
+#[allow(dead_code)]
+enum TokenResults {
+	String(String),
+	Number(usize),
+	Empty
 }
 
 
@@ -409,12 +460,19 @@ fn main() {
 	let X = ctx.nterm("X");
 	let a = ctx.term("a");
 	let b = ctx.term("b");
-	let c = ctx.term("c");
 
-	ctx.rule(ACCEPT, vec![S]);
-	ctx.rule(S, vec![X, X]);
-	ctx.rule(X, vec![a, X]);
-	ctx.rule(X, vec![b]);
+	RULE!(in ctx<TokenResults> where ACCEPT: S(s:Number) => {
+		s.clone()
+	});
+	RULE!(in ctx<TokenResults> where S: X(a:Number) X(b:Number) => {
+		a+b+1
+	});
+	RULE!(in ctx<TokenResults> where X: a(a:Number) X(b:Number) => {
+		a+b+1
+	});
+	RULE!(in ctx<TokenResults> where X: b(b:Number) => {
+		b+1
+	});
 
 	let r = &ctx.rules[1];
 	println!("{}", r.fmt(&ctx));
@@ -435,5 +493,8 @@ fn main() {
 			token.fmt(&ctx),
 			fmt_node(node));
 	}
-	parse(graph, &ctx, VecDeque::from([a, a, b]));
+
+	let t_a = Token {kind: b, value: None};
+	let t_b = Token {kind: b, value: None};
+	parse(graph, &ctx, VecDeque::from([t_a, t_b]));
 }
