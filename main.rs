@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
-use std::any::Any;
 
 
 #[allow(dead_code)]
@@ -28,30 +27,30 @@ struct Lexeme {
 }
 
 
-struct Token {
+struct Token<T> {
 	kind: Lexeme,
-	value: Option<Box<dyn Any>>
+	value: TokenValue<T>
 }
 
 
-struct ParserContext {
+struct ParserContext<T> {
 	lexeme_id: usize,
 	lexeme_names: Vec<String>,
 	rule_id: usize,
-	rules: Rules
+	rules: Rules<T>
 }
 
 
-struct Rule {
+struct Rule<T> {
 	id: usize,
 	product: Lexeme,
 	tokens: Vec<Lexeme>,
-	method: ReduceMethod
+	method: ReduceMethod<T>
 }
 
 
-struct Position<'a> {
-	rule: &'a Rule,
+struct Position<'a, T> {
+	rule: &'a Rule<T>,
 	lookahead: Lexeme,
 	position: usize
 }
@@ -65,8 +64,8 @@ enum ActionType {
 }
 
 
-enum Action<'a> {
-	Shift(Position<'a>),
+enum Action<'a, T> {
+	Shift(Position<'a, T>),
 	Reduce(usize)
 }
 
@@ -80,12 +79,12 @@ struct Node {
 
 type LexSet = HashSet<Lexeme>;
 type First = HashMap<Lexeme, LexSet>;
-type State<'a> = HashSet<Position<'a>>;
-type States<'a> = HashMap<usize, State<'a>>;
-type Rules = Vec<Rule>;
+type State<'a, T> = HashSet<Position<'a, T>>;
+type States<'a, T> = HashMap<usize, State<'a, T>>;
+type Rules<T> = Vec<Rule<T>>;
 type Graph = HashMap<(usize, Lexeme), Node>;
-type TokenValue = Option<Box<dyn Any>>;
-type ReduceMethod = Box<dyn Fn(Vec<TokenValue>) -> TokenValue>;
+type TokenValue<T> = Option<T>;
+type ReduceMethod<T> = Box<dyn Fn(Vec<TokenValue<T>>) -> TokenValue<T>>;
 
 
 const ACCEPT: Lexeme = Lexeme {id: 1, terminal: false};
@@ -93,7 +92,7 @@ const EOF: Lexeme = Lexeme {id: 2, terminal: true};
 
 
 impl Lexeme {
-	fn fmt(&self, ctx: &ParserContext) -> String {
+	fn fmt<T>(&self, ctx: &ParserContext<T>) -> String {
 		let name = &ctx.lexeme_names[self.id-1];
 		if self.terminal {
 			name.clone()
@@ -104,8 +103,8 @@ impl Lexeme {
 }
 
 
-impl Rule {
-	fn fmt(&self, ctx: &ParserContext) -> String {
+impl<T> Rule<T> {
+	fn fmt(&self, ctx: &ParserContext<T>) -> String {
 		let mut tokens_repr = String::new();
 		for token in &self.tokens {
 			tokens_repr.push_str(" ");
@@ -113,14 +112,14 @@ impl Rule {
 		}
 		format!("{}. {} -> {}", self.id, self.product.fmt(ctx), tokens_repr)
 	}
-	fn start(&self, lookahead: Lexeme) -> Position {
+	fn start(&self, lookahead: Lexeme) -> Position<T> {
 		Position {rule: &self, lookahead: lookahead, position: 0}
 	}
 }
 
 
-impl Position<'_> {
-	fn fmt(&self, ctx: &ParserContext) -> String {
+impl<T> Position<'_, T> {
+	fn fmt(&self, ctx: &ParserContext<T>) -> String {
 		let mut tokens_repr = String::new();
 		let dot = colored("∘", Color::Green, true);
 		for (i, token) in self.rule.tokens.iter().enumerate() {
@@ -150,7 +149,7 @@ impl Position<'_> {
 			HashSet::from([self.lookahead])
 		}
 	}
-	fn expand<'a>(&self, ctx: &'a ParserContext, first: &First) -> State<'a> {
+	fn expand<'a>(&self, ctx: &'a ParserContext<T>, first: &First) -> State<'a, T> {
 		let mut result = HashSet::new();
 		if let Some(at) = self.at(0) {
 			if !at.terminal {
@@ -166,7 +165,7 @@ impl Position<'_> {
 		result
 	}
 }
-fn next_action<'a>(entry: &Position, ctx: &'a ParserContext) -> (Lexeme, Action<'a>) {
+fn next_action<'a, T>(entry: &Position<T>, ctx: &'a ParserContext<T>) -> (Lexeme, Action<'a, T>) {
 	if let Some(at) = entry.at(0) {
 		(at, Action::Shift(Position {rule: &ctx.rules[entry.rule.id-1], lookahead: entry.lookahead, position: entry.position+1}))
 	} else {
@@ -175,25 +174,25 @@ fn next_action<'a>(entry: &Position, ctx: &'a ParserContext) -> (Lexeme, Action<
 }
 
 
-impl Hash for Position<'_> {
+impl<T> Hash for Position<'_, T> {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.rule.id.hash(state);
 		self.position.hash(state);
 		self.lookahead.hash(state);
 	}
 }
-impl PartialEq for Position<'_> {
-	fn eq(&self, other: &Position) -> bool {
+impl<T> PartialEq for Position<'_, T> {
+	fn eq(&self, other: &Position<T>) -> bool {
 		self.rule.id == other.rule.id &&
 		self.position == other.position &&
 		self.lookahead == other.lookahead
 	}
 }
-impl Eq for Position<'_> {}
+impl<T> Eq for Position<'_, T> {}
 
 
-impl ParserContext {
-	fn new() -> ParserContext {
+impl<T> ParserContext<T> {
+	fn new() -> ParserContext<T> {
 		let mut ctx = ParserContext {rule_id: 0, lexeme_id: 0, lexeme_names: Vec::new(), rules: Vec::new()};
 		ctx.nterm(&colored("S'", Color::Blue, true));
 		ctx.term(&colored("$", Color::Blue, true));
@@ -209,7 +208,7 @@ impl ParserContext {
 		self.lexeme_names.push(String::from(name));
 		Lexeme {id: self.lexeme_id, terminal: false}
 	}
-	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>, method: ReduceMethod) {
+	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>, method: ReduceMethod<T>) {
 		if self.rule_id == 0 {
 			assert!(product == ACCEPT, "First rule must produce ACCEPT");
 		}
@@ -220,7 +219,7 @@ impl ParserContext {
 }
 
 
-fn fmt_lexset(tokens: &LexSet, ctx: &ParserContext) -> String {
+fn fmt_lexset<T>(tokens: &LexSet, ctx: &ParserContext<T>) -> String {
 	let mut result = String::from("[ ");
 	for token in tokens {
 		result.push_str(&token.fmt(ctx));
@@ -229,14 +228,14 @@ fn fmt_lexset(tokens: &LexSet, ctx: &ParserContext) -> String {
 	result.push_str("]");
 	result
 }
-fn fmt_first(first: &First, ctx: &ParserContext) -> String {
+fn fmt_first<T>(first: &First, ctx: &ParserContext<T>) -> String {
 	let mut result = String::new();
 	for (key, tokens) in first {
 		result.push_str(&format!("{}: {}\n", key.fmt(ctx), fmt_lexset(tokens, ctx)));
 	}
 	result
 }
-fn fmt_state(state: &State, ctx: &ParserContext) -> String {
+fn fmt_state<T>(state: &State<T>, ctx: &ParserContext<T>) -> String {
 	let mut result = String::new();
 	for entry in state {
 		result.push_str(&entry.fmt(ctx));
@@ -244,7 +243,6 @@ fn fmt_state(state: &State, ctx: &ParserContext) -> String {
 	}
 	result
 }
-
 fn fmt_node(node: &Node) -> String {
 	match node.action {
 		ActionType::Shift => colored(&format!("S{}", node.value), Color::White, false),
@@ -252,7 +250,8 @@ fn fmt_node(node: &Node) -> String {
 	}
 }
 
-fn gen_first(rules: &Rules, ctx: &ParserContext) -> First {
+
+fn gen_first<T>(rules: &Rules<T>, ctx: &ParserContext<T>) -> First {
 	let mut first: First = HashMap::new();
 	for rule in rules {
 		//println!("{} -> {}", rule.product.fmt(ctx), rule.tokens[0].fmt(ctx));
@@ -290,11 +289,11 @@ fn gen_first(rules: &Rules, ctx: &ParserContext) -> First {
 }
 
 
-fn expand_state<'a>(state:State<'a>, ctx: &'a ParserContext, first: &First) -> State<'a> {
+fn expand_state<'a, T>(state:State<'a, T>, ctx: &'a ParserContext<T>, first: &First) -> State<'a, T> {
 	let mut waiting = state;
-	let mut new_state: State = HashSet::new();
+	let mut new_state: State<T> = HashSet::new();
 	while !waiting.is_empty() {
-		let mut new_waiting: State = HashSet::new();
+		let mut new_waiting: State<T> = HashSet::new();
 		for entry in waiting {
 			if !new_state.contains(&entry) {
 				for sub_entry in entry.expand(ctx, &first) {
@@ -309,8 +308,8 @@ fn expand_state<'a>(state:State<'a>, ctx: &'a ParserContext, first: &First) -> S
 }
 
 
-fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap<(usize, Lexeme), Node>, HashMap<usize, State<'a>>) {
-	let mut states: States = HashMap::new();
+fn build_automaton<'a, 'b, T>(ctx: &'a ParserContext<T>, first: &'b First) -> (Graph, States<'a, T>) {
+	let mut states: States<T> = HashMap::new();
 	let mut graph: Graph = HashMap::new();
 	let mut next_state_id = 1;
 	let mut waiting = vec![(0, HashSet::from([ctx.rules[0].start(EOF)]))];
@@ -336,7 +335,7 @@ fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap
 			}
 			states.insert(state_id, state);
 			let state = states.get(&state_id).unwrap();
-			let mut shift: HashMap<Lexeme, State> = HashMap::new();
+			let mut shift: HashMap<Lexeme, State<T>> = HashMap::new();
 			let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
 			for entry in state {
 				match next_action(&entry, ctx) {
@@ -376,10 +375,10 @@ fn build_automaton<'a, 'b>(ctx: &'a ParserContext, first: &'b First) -> (HashMap
 }
 
 
-fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool {
+fn parse<T>(graph: Graph, ctx: &ParserContext<T>, mut stream: VecDeque<Token<T>>) -> bool {
 	stream.push_back(Token {kind: EOF, value: None});
 	let mut state_stack = vec![0];
-	//let build_stack: Vec<Option<Box<dyn Any>>> = Vec::new();
+	//let build_stack: Vec<TokenValue<T>> = Vec::new();
 	while !stream.is_empty() {
 		let state = state_stack[state_stack.len()-1];
 		let token = stream.front().unwrap();
@@ -413,32 +412,27 @@ fn parse(graph: Graph, ctx: &ParserContext, mut stream: VecDeque<Token>) -> bool
 
 
 macro_rules! RULE {
-	($T:ident [$v:ident $i:ident] $func:block) => {
+	($T:ident [$v:ident $i:ident] $prod:ident $func:block) => {
 		{
-			let boxed: TokenValue = Some(Box::from($func));
-			boxed
+			Some($T::$prod($func))
 		}
 	};
-	($T:ident $l:ident($n:ident : $t:ident) $($l_:ident($n_:ident : $t_:ident))* [$v:ident $i:ident] $func:block) => {
+	($T:ident $l:ident($n:ident : $t:ident) $($l_:ident($n_:ident : $t_:ident))* [$v:ident $i:ident] $prod:ident $func:block) => {
 		{
 			println!("here!!!");
 			$i += 1;
-			if let Some(pointer) = &$v[$i-1] {
-				if let Some($T::$t($n)) = pointer.downcast_ref::<$T>() {
-					RULE!($T $($l_($n_:$t_))* [$v $i] $func)
-				} else {
-					unreachable!();
-				}
+			if let Some($T::$t($n)) = &$v[$i-1] {
+				RULE!($T $($l_($n_:$t_))* [$v $i] $prod $func)
 			} else {
 				unreachable!();
 			}
 		}
 	};
-	(in $ctx:ident<$T:ident> where $product:ident : $($l:ident($n:ident : $t:ident))* => $func:block) => {
+	(in $ctx:ident<$T:ident> where $product:ident : $($l:ident($n:ident : $t:ident))* => $prod:ident $func:block) => {
 		{
-			$ctx.rule($product, vec![$($l,)*], Box::from(|v:Vec<TokenValue>| {
+			$ctx.rule($product, vec![$($l,)*], Box::from(|v:Vec<TokenValue<$T>>| {
 				let mut i = 0;
-				RULE!($T $($l($n:$t))* [v i] $func)
+				RULE!($T $($l($n:$t))* [v i] $prod $func)
 			}));
 		}
 	};
@@ -461,16 +455,16 @@ fn main() {
 	let a = ctx.term("a");
 	let b = ctx.term("b");
 
-	RULE!(in ctx<TokenResults> where ACCEPT: S(s:Number) => {
-		s.clone()
+	RULE!(in ctx<TokenResults> where ACCEPT: S(s:Number) => Number {
+		*s
 	});
-	RULE!(in ctx<TokenResults> where S: X(a:Number) X(b:Number) => {
+	RULE!(in ctx<TokenResults> where S: X(a:Number) X(b:Number) => Number {
 		a+b+1
 	});
-	RULE!(in ctx<TokenResults> where X: a(a:Number) X(b:Number) => {
+	RULE!(in ctx<TokenResults> where X: a(a:Number) X(b:Number) => Number {
 		a+b+1
 	});
-	RULE!(in ctx<TokenResults> where X: b(b:Number) => {
+	RULE!(in ctx<TokenResults> where X: b(b:Number) => Number {
 		b+1
 	});
 
@@ -494,7 +488,7 @@ fn main() {
 			fmt_node(node));
 	}
 
-	let t_a = Token {kind: b, value: None};
+	let t_a = Token {kind: a, value: None};
 	let t_b = Token {kind: b, value: None};
 	parse(graph, &ctx, VecDeque::from([t_a, t_b]));
 }
