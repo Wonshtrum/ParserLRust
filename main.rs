@@ -37,7 +37,9 @@ struct ParserContext<T> {
 	lexeme_id: usize,
 	lexeme_names: Vec<String>,
 	rule_id: usize,
-	rules: Rules<T>
+	rules: Rules<T>,
+	first: First,
+	graph: Graph
 }
 
 
@@ -193,10 +195,25 @@ impl<T> Eq for Position<'_, T> {}
 
 impl<T> ParserContext<T> {
 	fn new() -> ParserContext<T> {
-		let mut ctx = ParserContext {rule_id: 0, lexeme_id: 0, lexeme_names: Vec::new(), rules: Vec::new()};
+		let mut ctx = ParserContext {
+			rule_id: 0,
+			lexeme_id: 0,
+			lexeme_names: Vec::new(),
+			rules: Vec::new(),
+			first: HashMap::new(),
+			graph: HashMap::new()
+		};
 		ctx.nterm(&colored("S'", Color::Blue, true));
 		ctx.term(&colored("$", Color::Blue, true));
 		ctx
+	}
+	fn fmt(&self) -> String {
+		let mut result = String::new();
+		for rule in &self.rules {
+			result.push_str(&rule.fmt(self));
+			result.push_str("\n");
+		}
+		result
 	}
 	fn term(&mut self, name: &str) -> Lexeme {
 		self.lexeme_id += 1;
@@ -216,7 +233,143 @@ impl<T> ParserContext<T> {
 		let rule = Rule {id: self.rule_id, product, tokens, method};
 		self.rules.push(rule);
 	}
+	fn gen_first(&mut self) {
+		for rule in &self.rules {
+			//println!("{} -> {}", rule.product.fmt(ctx), rule.tokens[0].fmt(ctx));
+			if let Some(set) = self.first.get_mut(&rule.product) {
+				set.insert(rule.tokens[0]);
+			} else {
+				self.first.insert(rule.product, HashSet::from([rule.tokens[0]]));
+			}
+		}
+		println!("{}", fmt_first(&self.first, &self));
+		let mut changed = true;
+		while changed {
+			changed = false;
+			let mut new_first: First = HashMap::new();
+			for (key, tokens) in &self.first {
+				let mut new_tokens = HashSet::new();
+				for token in tokens {
+					if token.terminal {
+						new_tokens.insert(*token);
+					} else if let Some(set) = self.first.get(token) {
+						for t in set {
+							if !t.terminal {
+								changed = true;
+							}
+							new_tokens.insert(*t);
+						}
+					}
+				}
+				new_first.insert(*key, new_tokens);
+			}
+			self.first = new_first;
+			println!("{}", fmt_first(&self.first, &self));
+		}
+	}
+	fn build_automaton(&mut self) {
+		self.gen_first();
+		let mut graph: Graph = HashMap::new();
+		let mut states: States<T> = HashMap::new();
+		let mut next_state_id = 1;
+		let mut waiting = vec![(0, HashSet::from([self.rules[0].start(EOF)]))];
+		while !waiting.is_empty() {
+			let mut new_waiting = Vec::new();
+			for (state_id, state) in waiting {
+				let state = expand_state(state, self);
+				let mut merge = Vec::new();
+				for (other_id, other) in &states {
+					if other == &state {
+						for (k, v) in &graph {
+							if v.action == ActionType::Shift && v.value == state_id {
+								merge.push((*k, *other_id));
+							}
+						}
+					}
+				}
+				if !merge.is_empty() {
+					for (k, v) in merge {
+						graph.insert(k, Node {action: ActionType::Shift, value: v});
+					}
+					continue;
+				}
+				states.insert(state_id, state);
+				let state = states.get(&state_id).unwrap();
+				let mut shift: HashMap<Lexeme, State<T>> = HashMap::new();
+				let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
+				for entry in state {
+					match next_action(&entry, self) {
+						(token, Action::Shift(new_entry)) => {
+							if reduce.contains_key(&token) {
+								panic!("Shift/Reduce conflict");
+							}
+							if let Some(set) = shift.get_mut(&token) {
+								set.insert(new_entry);
+							} else {
+								shift.insert(token, HashSet::from([new_entry]));
+							}
+						}
+						(token, Action::Reduce(rule_id)) => {
+							if reduce.contains_key(&token) {
+								panic!("Reduce/Reduce conflict");
+							}
+							if shift.contains_key(&token) {
+								panic!("Shift/Reduce conflict");
+							}
+							reduce.insert(token, rule_id);
+						}
+					}
+				}
+				for (k, v) in shift {
+					new_waiting.push((next_state_id, v));
+					graph.insert((state_id, k), Node {action: ActionType::Shift, value: next_state_id});
+					next_state_id += 1;
+				}
+				for (k, v) in reduce {
+					graph.insert((state_id, k), Node {action: ActionType::Reduce, value: v});
+				}
+			}
+			waiting = new_waiting;
+		}
+		println!("{}", fmt_states(&states, self));
+		self.graph = graph;
+	}
+	fn parse(&self, mut stream: VecDeque<Token<T>>) -> bool {
+		stream.push_back(Token {kind: EOF, value: None});
+		let mut state_stack = vec![0];
+		//let build_stack: Vec<TokenValue<T>> = Vec::new();
+		while !stream.is_empty() {
+			let state = state_stack[state_stack.len()-1];
+			let token = stream.front().unwrap();
+			let key = (state, token.kind);
+			if let Some(node) = self.graph.get(&key) {
+				println!("({}, {}) : {}", state, token.kind.fmt(self), fmt_node(node));
+				match node.action {
+					ActionType::Reduce => {
+						let reduction = &self.rules[node.value-1];
+						if reduction.product == ACCEPT {
+							println!("{}", colored("Valid input", Color::Green, true));
+							return true;
+						}
+						//(reduction.method)(build_stack);
+						state_stack.truncate(state_stack.len().saturating_sub(reduction.tokens.len()));
+						stream.push_front(Token {kind:reduction.product, value: None });
+					}
+					ActionType::Shift => {
+						state_stack.push(node.value);
+						stream.pop_front();
+					}
+				}
+			} else {
+				let expected = self.graph.keys().filter(|(s, t)| s == &state && t.terminal).map(|(_, t)| *t).collect::<Vec<Lexeme>>();
+				println!("Found: {}\nExpected: {}", token.kind.fmt(self), fmt_lexset(&HashSet::from_iter(expected), self));
+				return false;
+			}
+		}
+		unreachable!();
+	}
 }
+
 
 
 fn fmt_lexset<T>(tokens: &LexSet, ctx: &ParserContext<T>) -> String {
@@ -243,60 +396,39 @@ fn fmt_state<T>(state: &State<T>, ctx: &ParserContext<T>) -> String {
 	}
 	result
 }
+fn fmt_states<T>(states: &States<T>, ctx: &ParserContext<T>) -> String {
+	let mut result = String::new();
+	for (state_id, state) in states {
+		result.push_str(&format!("State {}:\n{}", state_id, fmt_state(&state, &ctx)));
+	}
+	result
+}
 fn fmt_node(node: &Node) -> String {
 	match node.action {
 		ActionType::Shift => colored(&format!("S{}", node.value), Color::White, false),
 		ActionType::Reduce => colored(&format!("R{}", node.value), Color::Yellow, true)
 	}
 }
-
-
-fn gen_first<T>(rules: &Rules<T>, ctx: &ParserContext<T>) -> First {
-	let mut first: First = HashMap::new();
-	for rule in rules {
-		//println!("{} -> {}", rule.product.fmt(ctx), rule.tokens[0].fmt(ctx));
-		if let Some(set) = first.get_mut(&rule.product) {
-			set.insert(rule.tokens[0]);
-		} else {
-			first.insert(rule.product, HashSet::from([rule.tokens[0]]));
-		}
+fn fmt_graph<T>(graph: &Graph, ctx: &ParserContext<T>) -> String {
+	let mut result = String::new();
+	for ((state_id, token), node) in graph {
+		result.push_str(&format!("({}, {}) -> {}\n",
+			state_id,
+			token.fmt(&ctx),
+			fmt_node(node)));
 	}
-	println!("{}", fmt_first(&first, &ctx));
-	let mut changed = true;
-	while changed {
-		changed = false;
-		let mut new_first: First = HashMap::new();
-		for (key, tokens) in &first {
-			let mut new_tokens = HashSet::new();
-			for token in tokens {
-				if token.terminal {
-					new_tokens.insert(*token);
-				} else if let Some(set) = first.get(token) {
-					for t in set {
-						if !t.terminal {
-							changed = true;
-						}
-						new_tokens.insert(*t);
-					}
-				}
-			}
-			new_first.insert(*key, new_tokens);
-		}
-		first = new_first;
-		println!("{}", fmt_first(&first, &ctx));
-	}
-	first
+	result
 }
 
 
-fn expand_state<'a, T>(state:State<'a, T>, ctx: &'a ParserContext<T>, first: &First) -> State<'a, T> {
+fn expand_state<'a, T>(state:State<'a, T>, ctx: &'a ParserContext<T>) -> State<'a, T> {
 	let mut waiting = state;
 	let mut new_state: State<T> = HashSet::new();
 	while !waiting.is_empty() {
 		let mut new_waiting: State<T> = HashSet::new();
 		for entry in waiting {
 			if !new_state.contains(&entry) {
-				for sub_entry in entry.expand(ctx, &first) {
+				for sub_entry in entry.expand(ctx, &ctx.first) {
 					new_waiting.insert(sub_entry);
 				}
 				new_state.insert(entry);
@@ -305,109 +437,6 @@ fn expand_state<'a, T>(state:State<'a, T>, ctx: &'a ParserContext<T>, first: &Fi
 		waiting = new_waiting;
 	}
 	new_state
-}
-
-
-fn build_automaton<'a, 'b, T>(ctx: &'a ParserContext<T>, first: &'b First) -> (Graph, States<'a, T>) {
-	let mut states: States<T> = HashMap::new();
-	let mut graph: Graph = HashMap::new();
-	let mut next_state_id = 1;
-	let mut waiting = vec![(0, HashSet::from([ctx.rules[0].start(EOF)]))];
-	while !waiting.is_empty() {
-		let mut new_waiting = Vec::new();
-		for (state_id, state) in waiting {
-			let state = expand_state(state, ctx, first);
-			let mut merge = Vec::new();
-			for (other_id, other) in &states {
-				if other == &state {
-					for (k, v) in &graph {
-						if v.action == ActionType::Shift && v.value == state_id {
-							merge.push((*k, *other_id));
-						}
-					}
-				}
-			}
-			if !merge.is_empty() {
-				for (k, v) in merge {
-					graph.insert(k, Node {action: ActionType::Shift, value: v});
-				}
-				continue;
-			}
-			states.insert(state_id, state);
-			let state = states.get(&state_id).unwrap();
-			let mut shift: HashMap<Lexeme, State<T>> = HashMap::new();
-			let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
-			for entry in state {
-				match next_action(&entry, ctx) {
-					(token, Action::Shift(new_entry)) => {
-						if reduce.contains_key(&token) {
-							panic!("Shift/Reduce conflict");
-						}
-						if let Some(set) = shift.get_mut(&token) {
-							set.insert(new_entry);
-						} else {
-							shift.insert(token, HashSet::from([new_entry]));
-						}
-					}
-					(token, Action::Reduce(rule_id)) => {
-						if reduce.contains_key(&token) {
-							panic!("Reduce/Reduce conflict");
-						}
-						if shift.contains_key(&token) {
-							panic!("Shift/Reduce conflict");
-						}
-						reduce.insert(token, rule_id);
-					}
-				}
-			}
-			for (k, v) in shift {
-				new_waiting.push((next_state_id, v));
-				graph.insert((state_id, k), Node {action: ActionType::Shift, value: next_state_id});
-				next_state_id += 1;
-			}
-			for (k, v) in reduce {
-				graph.insert((state_id, k), Node {action: ActionType::Reduce, value: v});
-			}
-		}
-		waiting = new_waiting;
-	}
-	(graph, states)
-}
-
-
-fn parse<T>(graph: Graph, ctx: &ParserContext<T>, mut stream: VecDeque<Token<T>>) -> bool {
-	stream.push_back(Token {kind: EOF, value: None});
-	let mut state_stack = vec![0];
-	//let build_stack: Vec<TokenValue<T>> = Vec::new();
-	while !stream.is_empty() {
-		let state = state_stack[state_stack.len()-1];
-		let token = stream.front().unwrap();
-		let key = (state, token.kind);
-		if let Some(node) = graph.get(&key) {
-			println!("({}, {}) : {}", state, token.kind.fmt(ctx), fmt_node(node));
-			match node.action {
-				ActionType::Reduce => {
-					let reduction = &ctx.rules[node.value-1];
-					if reduction.product == ACCEPT {
-						println!("{}", colored("Valid input", Color::Green, true));
-						return true;
-					}
-					//(reduction.method)(build_stack);
-					state_stack.truncate(state_stack.len().saturating_sub(reduction.tokens.len()));
-					stream.push_front(Token {kind:reduction.product, value: None });
-				}
-				ActionType::Shift => {
-					state_stack.push(node.value);
-					stream.pop_front();
-				}
-			}
-		} else {
-			let expected = graph.keys().filter(|(s, t)| s == &state && t.terminal).map(|(_, t)| *t).collect::<Vec<Lexeme>>();
-			println!("Found: {}\nExpected: {}", token.kind.fmt(ctx), fmt_lexset(&HashSet::from_iter(expected), ctx));
-			return false;
-		}
-	}
-	unreachable!();
 }
 
 
@@ -441,9 +470,7 @@ macro_rules! RULE {
 
 #[allow(dead_code)]
 enum TokenResults {
-	String(String),
 	Number(usize),
-	Empty
 }
 
 
@@ -468,27 +495,12 @@ fn main() {
 		b+1
 	});
 
-	let r = &ctx.rules[1];
-	println!("{}", r.fmt(&ctx));
-	println!("{}", r.start(a).fmt(&ctx));
-	let mut p = r.start(b);
-	p.position = 1;
-	println!("{}", p.fmt(&ctx));
+	println!("{}", ctx.fmt());
+	ctx.build_automaton();
 
-	let first = gen_first(&ctx.rules, &ctx);
+	println!("{}", fmt_graph(&ctx.graph, &ctx));
 
-	let (graph, states) = build_automaton(&ctx, &first);
-	for (state_id, state) in &states {
-		println!("State {}:\n{}", state_id, fmt_state(&state, &ctx));
-	}
-	for ((state_id, token), node) in &graph {
-		println!("({}, {}) -> {}",
-			state_id,
-			token.fmt(&ctx),
-			fmt_node(node));
-	}
-
-	let t_a = Token {kind: a, value: None};
+	let t_a = Token {kind: b, value: None};
 	let t_b = Token {kind: b, value: None};
-	parse(graph, &ctx, VecDeque::from([t_a, t_b]));
+	ctx.parse(VecDeque::from([t_a, t_b]));
 }
