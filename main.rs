@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
+use std::fmt::Debug;
 
 
 #[allow(dead_code)]
@@ -36,6 +37,7 @@ struct Token<T> {
 struct ParserContext<T> {
 	lexeme_id: usize,
 	lexeme_names: Vec<String>,
+	lexeme_types: Vec<bool>,
 	rule_id: usize,
 	rules: Rules<T>,
 	first: First,
@@ -199,6 +201,7 @@ impl<T> ParserContext<T> {
 			rule_id: 0,
 			lexeme_id: 0,
 			lexeme_names: Vec::new(),
+			lexeme_types: Vec::new(),
 			rules: Vec::new(),
 			first: HashMap::new(),
 			graph: HashMap::new()
@@ -218,11 +221,13 @@ impl<T> ParserContext<T> {
 	fn term(&mut self, name: &str) -> Lexeme {
 		self.lexeme_id += 1;
 		self.lexeme_names.push(String::from(name));
+		self.lexeme_types.push(true);
 		Lexeme {id: self.lexeme_id, terminal: true}
 	}
 	fn nterm(&mut self, name: &str) -> Lexeme {
 		self.lexeme_id += 1;
 		self.lexeme_names.push(String::from(name));
+		self.lexeme_types.push(false);
 		Lexeme {id: self.lexeme_id, terminal: false}
 	}
 	fn rule(&mut self, product: Lexeme, tokens: Vec<Lexeme>, method: ReduceMethod<T>) {
@@ -233,42 +238,38 @@ impl<T> ParserContext<T> {
 		let rule = Rule {id: self.rule_id, product, tokens, method};
 		self.rules.push(rule);
 	}
-	fn gen_first(&mut self) {
+	fn build_first(&mut self) {
 		for rule in &self.rules {
-			//println!("{} -> {}", rule.product.fmt(ctx), rule.tokens[0].fmt(ctx));
-			if let Some(set) = self.first.get_mut(&rule.product) {
-				set.insert(rule.tokens[0]);
-			} else {
-				self.first.insert(rule.product, HashSet::from([rule.tokens[0]]));
-			}
+			self.first.insert(rule.product, HashSet::new());
 		}
-		println!("{}", fmt_first(&self.first, &self));
 		let mut changed = true;
 		while changed {
 			changed = false;
-			let mut new_first: First = HashMap::new();
-			for (key, tokens) in &self.first {
-				let mut new_tokens = HashSet::new();
-				for token in tokens {
-					if token.terminal {
-						new_tokens.insert(*token);
-					} else if let Some(set) = self.first.get(token) {
-						for t in set {
-							if !t.terminal {
-								changed = true;
-							}
-							new_tokens.insert(*t);
+			for rule in &self.rules {
+				if let Some(set) = self.first.get(&rule.product) {
+					let mut new_set = HashSet::new();
+					for t in set {
+						new_set.insert(*t);
+					}
+					let first = rule.tokens[0];
+					if first.terminal {
+						new_set.insert(first);
+					} else if let Some(other) = self.first.get(&first) {
+						for t in other {
+							new_set.insert(*t);
 						}
 					}
+					if &new_set != set {
+						changed = true;
+						self.first.insert(rule.product, new_set);
+					}
 				}
-				new_first.insert(*key, new_tokens);
 			}
-			self.first = new_first;
 			println!("{}", fmt_first(&self.first, &self));
 		}
 	}
 	fn build_automaton(&mut self) {
-		self.gen_first();
+		self.build_first();
 		let mut graph: Graph = HashMap::new();
 		let mut states: States<T> = HashMap::new();
 		let mut next_state_id = 1;
@@ -368,6 +369,14 @@ impl<T> ParserContext<T> {
 		}
 		unreachable!();
 	}
+	fn debug_get(&self, name: &str) -> Lexeme {
+		for (i, other) in self.lexeme_names.iter().enumerate() {
+			if name == other {
+				return Lexeme {id: i+1, terminal: self.lexeme_types[i]};
+			}
+		}
+		unreachable!();
+	}
 }
 
 
@@ -416,6 +425,19 @@ fn fmt_graph<T>(graph: &Graph, ctx: &ParserContext<T>) -> String {
 			state_id,
 			token.fmt(&ctx),
 			fmt_node(node)));
+	}
+	result
+}
+fn fmt_stream<T>(stream: &VecDeque<Token<T>>, ctx: &ParserContext<T>) -> String 
+	where T: Debug
+{
+	let mut result = String::new();
+	for token in stream {
+		if let Some(value) = &token.value {
+			result.push_str(&format!("{}:{:?} ", token.kind.fmt(ctx), value));
+		} else {
+			result.push_str(&format!("{}:None ", token.kind.fmt(ctx)));
+		}
 	}
 	result
 }
@@ -469,8 +491,50 @@ macro_rules! RULE {
 
 
 #[allow(dead_code)]
-enum TokenResults {
-	Number(usize),
+#[derive(Debug)]
+enum TokenMath {
+	Number(isize),
+	Add(()),
+	Sub(()),
+	Mul(()),
+	Div(()),
+	Lpr(()),
+	Rpr(()),
+}
+
+
+fn tokenise(text: String, ctx: &ParserContext<TokenMath>) -> VecDeque<Token<TokenMath>> {
+	let mut stream = VecDeque::new();
+	let mut was_number = false;
+	let mut is_number = false;
+	let mut number = 0;
+	for c in text.chars() {
+		is_number = false;
+		let lexeme = match c {
+			' ' => None,
+			'+' => Some(Token {kind: ctx.debug_get("+"), value: Some(TokenMath::Add(()))}),
+			'-' => Some(Token {kind: ctx.debug_get("-"), value: Some(TokenMath::Sub(()))}),
+			'*' => Some(Token {kind: ctx.debug_get("*"), value: Some(TokenMath::Mul(()))}),
+			'/' => Some(Token {kind: ctx.debug_get("/"), value: Some(TokenMath::Div(()))}),
+			'(' => Some(Token {kind: ctx.debug_get("("), value: Some(TokenMath::Lpr(()))}),
+			')' => Some(Token {kind: ctx.debug_get(")"), value: Some(TokenMath::Rpr(()))}),
+			d if '0' <= d && d <= '9' => {
+				number = number*10+((d as isize)-('0' as isize));
+				is_number = true;
+				None
+			}
+			d => panic!("{}", &colored(&format!("Unexpected character: {}", d), Color::Red, true))
+		};
+		if was_number && !is_number {
+			stream.push_back(Token {kind: ctx.debug_get("num"), value: Some(TokenMath::Number(number))});
+			number = 0;
+		}
+		if let Some(token) = lexeme {
+			stream.push_back(token);
+		}
+		was_number = is_number;
+	}
+	stream
 }
 
 
@@ -482,25 +546,79 @@ fn main() {
 	let a = ctx.term("a");
 	let b = ctx.term("b");
 
-	RULE!(in ctx<TokenResults> where ACCEPT: S(s:Number) => Number {
+	RULE!(in ctx<TokenMath> where ACCEPT: S(s:Number) => Number {
 		*s
 	});
-	RULE!(in ctx<TokenResults> where S: X(a:Number) X(b:Number) => Number {
+	RULE!(in ctx<TokenMath> where S: X(a:Number) X(b:Number) => Number {
 		a+b+1
 	});
-	RULE!(in ctx<TokenResults> where X: a(a:Number) X(b:Number) => Number {
+	RULE!(in ctx<TokenMath> where X: a(a:Number) X(b:Number) => Number {
 		a+b+1
 	});
-	RULE!(in ctx<TokenResults> where X: b(b:Number) => Number {
+	RULE!(in ctx<TokenMath> where X: b(b:Number) => Number {
 		b+1
 	});
 
 	println!("{}", ctx.fmt());
 	ctx.build_automaton();
-
 	println!("{}", fmt_graph(&ctx.graph, &ctx));
 
 	let t_a = Token {kind: b, value: None};
 	let t_b = Token {kind: b, value: None};
 	ctx.parse(VecDeque::from([t_a, t_b]));
+
+
+
+	let mut ctx = ParserContext::new();
+	let Term = ctx.nterm("Term");
+	let Fact = ctx.nterm("Fact");
+	let Sum = ctx.nterm("Sum");
+	let add = ctx.term("+");
+	let sub = ctx.term("-");
+	let mul = ctx.term("*");
+	let div = ctx.term("/");
+	let lpr = ctx.term("(");
+	let rpr = ctx.term(")");
+	let num = ctx.term("num");
+
+	RULE!(in ctx<TokenMath> where ACCEPT: Sum(s:Number) => Number {
+		*s
+	});
+	RULE!(in ctx<TokenMath> where Sum: Sum(a:Number) add(_o:Add) Fact(b:Number) => Number {
+		a+b
+	});
+	RULE!(in ctx<TokenMath> where Sum: Sum(a:Number) sub(_o:Sub) Fact(b:Number) => Number {
+		a-b
+	});
+	RULE!(in ctx<TokenMath> where Fact: Fact(a:Number) mul(_o:Mul) Term(b:Number) => Number {
+		a*b
+	});
+	RULE!(in ctx<TokenMath> where Fact: Fact(a:Number) div(_o:Div) Term(b:Number) => Number {
+		a/b
+	});
+	RULE!(in ctx<TokenMath> where Term: lpr(_l:Lpr) Sum(s:Number) rpr(_r:Rpr) => Number {
+		*s
+	});
+	RULE!(in ctx<TokenMath> where Term: num(s:Number) => Number {
+		*s
+	});
+	RULE!(in ctx<TokenMath> where Term: add(_o:Add) Term(s:Number) => Number {
+		*s
+	});
+	RULE!(in ctx<TokenMath> where Term: sub(_o:Sub) Term(s:Number) => Number {
+		-s
+	});
+	RULE!(in ctx<TokenMath> where Sum: Fact(s:Number) => Number {
+		*s
+	});
+	RULE!(in ctx<TokenMath> where Fact: Term(s:Number) => Number {
+		*s
+	});
+
+	println!("{}", ctx.fmt());
+	ctx.build_automaton();
+	println!("{}", fmt_graph(&ctx.graph, &ctx));
+	let stream = tokenise(String::from("1+3-(1*2) "), &ctx);
+	println!("{}", fmt_stream(&stream, &ctx));
+	ctx.parse(stream);
 }

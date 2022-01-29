@@ -1,0 +1,16 @@
+warning: field is never read: `value`
+  --> main.rs:32:2
+   |
+32 |     value: TokenValue<T>
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field is never read: `method`
+  --> main.rs:50:2
+   |
+50 |     method: ReduceMethod<T>
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: 2 warnings emitted
+
