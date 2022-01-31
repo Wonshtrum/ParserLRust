@@ -111,13 +111,13 @@ impl<T> Rule<T> {
 	fn fmt(&self, ctx: &ParserContext<T>) -> String {
 		let mut tokens_repr = String::new();
 		for token in &self.tokens {
-			tokens_repr.push_str(" ");
+			tokens_repr.push(' ');
 			tokens_repr.push_str(&token.fmt(ctx));
 		}
 		format!("{}. {} -> {}", self.id, self.product.fmt(ctx), tokens_repr)
 	}
 	fn start(&self, lookahead: Lexeme) -> Position<T> {
-		Position {rule: &self, lookahead: lookahead, position: 0}
+		Position {rule: self, lookahead, position: 0}
 	}
 }
 
@@ -214,7 +214,7 @@ impl<T> ParserContext<T> {
 		let mut result = String::new();
 		for rule in &self.rules {
 			result.push_str(&rule.fmt(self));
-			result.push_str("\n");
+			result.push('\n');
 		}
 		result
 	}
@@ -265,7 +265,7 @@ impl<T> ParserContext<T> {
 					}
 				}
 			}
-			println!("{}", fmt_first(&self.first, &self));
+			println!("{}", fmt_first(&self.first, self));
 		}
 	}
 	fn build_automaton(&mut self) {
@@ -299,7 +299,7 @@ impl<T> ParserContext<T> {
 				let mut shift: HashMap<Lexeme, State<T>> = HashMap::new();
 				let mut reduce: HashMap<Lexeme, usize> = HashMap::new();
 				for entry in state {
-					match next_action(&entry, self) {
+					match next_action(entry, self) {
 						(token, Action::Shift(new_entry)) => {
 							if reduce.contains_key(&token) {
 								panic!("Shift/Reduce conflict");
@@ -413,9 +413,9 @@ fn fmt_lexset<T>(tokens: &LexSet, ctx: &ParserContext<T>) -> String {
 	let mut result = String::from("[ ");
 	for token in tokens {
 		result.push_str(&token.fmt(ctx));
-		result.push_str(" ");
+		result.push(' ');
 	}
-	result.push_str("]");
+	result.push(']');
 	result
 }
 fn fmt_first<T>(first: &First, ctx: &ParserContext<T>) -> String {
@@ -429,14 +429,14 @@ fn fmt_state<T>(state: &State<T>, ctx: &ParserContext<T>) -> String {
 	let mut result = String::new();
 	for entry in state {
 		result.push_str(&entry.fmt(ctx));
-		result.push_str("\n");
+		result.push('\n');
 	}
 	result
 }
 fn fmt_states<T>(states: &States<T>, ctx: &ParserContext<T>) -> String {
 	let mut result = String::new();
 	for (state_id, state) in states {
-		result.push_str(&format!("State {}:\n{}", state_id, fmt_state(&state, &ctx)));
+		result.push_str(&format!("State {}:\n{}", state_id, fmt_state(state, ctx)));
 	}
 	result
 }
@@ -451,7 +451,7 @@ fn fmt_graph<T>(graph: &Graph, ctx: &ParserContext<T>) -> String {
 	for ((state_id, token), node) in graph {
 		result.push_str(&format!("({}, {}) -> {}\n",
 			state_id,
-			token.fmt(&ctx),
+			token.fmt(ctx),
 			fmt_node(node)));
 	}
 	result
@@ -599,7 +599,7 @@ fn main() {
 	println!("{}", ctx.fmt());
 	ctx.build_automaton();
 	println!("{}", fmt_graph(&ctx.graph, &ctx));
-	let stream = tokenise(String::from("1+5-(4*123)"), &ctx);
+	let stream = tokenise(String::from("(1+5)*4-123 "), &ctx);
 	println!("{}", fmt_stream(&stream, &ctx));
 	ctx.parse(stream);
 }
